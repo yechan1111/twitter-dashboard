@@ -29,7 +29,7 @@ CELEBRITY_TERMS = ['연예인', '연예계', '아이돌', '배우', '가수', '�
                    '블랙핑크', '르세라핌', '에스파', '아이유', '임영웅', '차은우', '장원영']
 EXCLUSIONS = ' '.join('-' + term for term in CELEBRITY_TERMS[:10] if term != '배우')
 QUERIES = {
-    'crypto': '(크립토 OR 코인 OR 솔라나 OR 이더리움 OR 에어드랍 OR 디파이 OR 웹3 OR 금리 OR 환율 OR FOMC OR CPI OR 경제시황) lang:ko -filter:retweets ' + EXCLUSIONS,
+    'crypto': '(크립토 OR 코인 OR 솔라나 OR 이더리움 OR 에어드랍 OR 디파이 OR 웹3 OR 금리 OR 환율 OR FOMC OR CPI OR 경제시황 OR 규제 OR 해킹 OR 온체인 OR 블록체인 OR 거래소 OR 디파이) lang:ko -filter:retweets ' + EXCLUSIONS,
     'daily': '(일상 OR 셀카 OR 운동 OR 커피 OR 하루 OR 루틴) lang:ko -filter:retweets ' + EXCLUSIONS,
     'ai': '(AI OR 인공지능 OR ChatGPT OR 클로드 OR 생성형) (정보 OR 방법 OR 팁 OR 정리 OR 활용 OR 도구) lang:ko -filter:retweets ' + EXCLUSIONS,
     'growth': '(크립토 OR 일상 OR 인공지능) lang:ko -filter:retweets ' + EXCLUSIONS,
@@ -45,13 +45,13 @@ PERSONAS = {
             {'cat':'일상','title':'실제 사진과 하루의 맥락','text':'[직접 찍은 사진] + 오늘 [실제로 있었던 일].\n[짧은 감상] — 여러분의 하루는 어땠나요?'},
             {'cat':'일상','title':'밋업에서 기억에 남은 순간','text':'[실제로 참여한 밋업]에서 기억에 남은 건 [장면이나 대화].\n처음 알게 된 점은 [확인한 사실]. 다음엔 [질문]도 물어보고 싶다.'}]},
     'gat_only_you': {'name':'유경','level':'크립토 초보',
-        'focus':['에어드랍 작업','뉴스','시장 상황','밋업'],
-        'keywords':['에어드랍','airdrop','작업','참여','조건','뉴스','시장','밋업','meetup'],
+        'focus':['크립토 전반 이슈','프로젝트·생태계','뉴스·시장 상황','규제·보안','에어드랍 작업','밋업'],
+        'keywords':['에어드랍','airdrop','작업','참여','조건','뉴스','시장','프로젝트','생태계','규제','보안','해킹','온체인','블록체인','거래소','밋업','meetup'],
         'themeWeights':{'크립토':3,'AI 정보':1,'일상':1},
-        'angle':'에어드랍 참여 조건과 확인 과정, 뉴스의 초보자 질문, 밋업에서 배운 점으로 연결하세요.',
+        'angle':'크립토 전반에서 무슨 일이 일어났고 왜 중요한지 초보자 눈높이로 정리하세요. 프로젝트·생태계·규제·보안, 에어드랍, 밋업 이슈를 원출처로 확인하고 매매 판단과 구분하세요.',
         'templates':[
             {'cat':'크립토','title':'에어드랍 작업 전 체크할 것','text':'[공식 출처로 확인한 프로젝트]를 살펴보는 중.\n확인한 참여 조건은 [조건], 아직 확인할 건 [질문].\n보상은 확정된 게 아니니 공지와 지갑 권한부터 체크하려고 한다.'},
-            {'cat':'크립토','title':'오늘 뉴스, 내가 이해한 한 가지','text':'[원출처가 있는 뉴스]를 읽고 내가 이해한 변화는 [확인한 내용].\n초보 입장에서 궁금한 건 [질문]. 더 확인해보고 정리해볼게요.'},
+            {'cat':'크립토','title':'크립토 이슈, 무슨 일이고 왜 중요할까','text':'[원출처와 발표 시각이 있는 크립토 이슈]: [확인한 사실].\n중요해 보이는 이유는 [근거], 아직 확인할 건 [질문].\n초보 입장에서 이렇게 이해했는데 추가로 살펴보려고 한다.'},
             {'cat':'일상','title':'밋업 공부 메모','text':'[실제로 참여한 밋업]에서 배운 개념 하나: [직접 작성].\n아직 헷갈리는 건 [질문]. 다음에 직접 확인해보고 싶다.'}]},
     'seyyxz': {'name':'세인','level':'크립토 초보 · 실제 트레이딩 운영',
         'focus':['실제 트레이딩','시장 현황','경제 시황','뉴스','일상','밋업'],
@@ -273,7 +273,7 @@ def classify_theme(text):
     lower = text.lower()
     if celebrity_related(text):
         return None
-    if any(term in lower for term in ['크립토', '코인', '솔라나', '이더리움', '에어드랍', '디파이', '웹3', 'bitcoin', 'ethereum', 'web3', 'airdrop', '금리', '환율', 'fomc', 'cpi', '경제시황', '경제 시황']):
+    if any(term in lower for term in ['크립토', '코인', '솔라나', '이더리움', '에어드랍', '디파이', '웹3', 'bitcoin', 'ethereum', 'web3', 'airdrop', '금리', '환율', 'fomc', 'cpi', '경제시황', '경제 시황', '블록체인', '온체인', '디파이']):
         return '크립토'
     ai = re.search(r'(?<![a-z])ai(?![a-z])', lower) or any(term in lower for term in ['인공지능', 'chatgpt', '클로드', '생성형', '챗gpt'])
     information = any(term in lower for term in ['정보', '방법', '팁', '정리', '활용', '도구', '설명', '공부', '배운', '가이드', '기능'])
