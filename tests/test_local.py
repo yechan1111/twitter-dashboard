@@ -188,6 +188,16 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(self.app.recommend_posts('seyyxz',posts)[0]['post']['id'],'2')
         self.assertEqual(self.app.recommend_posts('GGzy55',posts)[0]['post']['id'],'3')
 
+    def test_idol_vote_posts_excluded_without_blocking_normal_votes(self):
+        sample='[📢] 투표 기간 동안 하루 1번 MAMA 팬스 초이스 투표 게시물을 올릴 예정입니다. 해당 게시물 꼭 RT와 답글로 해시태그 사용 부탁드립니다. #2026MAMAVOTE #idle'
+        self.assertTrue(self.app.celebrity_related(sample))
+        self.assertIsNone(self.app.classify_theme(sample))
+        self.assertTrue(self.app.celebrity_related('오늘 #2026MAMAVOTE'))
+        self.assertTrue(self.app.celebrity_related('일상 #idle'))
+        self.assertFalse(self.app.celebrity_related('오늘 아이들하고 산책한 일상'))
+        self.assertFalse(self.app.celebrity_related('크립토 프로젝트 DAO 투표 참여 방법'))
+        self.assertFalse(self.app.celebrity_related('AI 서비스 idle 상태 활용 정보'))
+
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
         self.assertEqual(self.app.slot(morning), '2026-10-12T21:00:00+09:00')

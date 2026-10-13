@@ -27,7 +27,8 @@ KEYCHAIN_SERVICE = 'SignalTwitterAPI'
 CELEBRITY_TERMS = ['연예인', '연예계', '아이돌', '배우', '가수', '팬싸', '팬미팅', '팬덤',
                    '포토카드', '컴백', '콘서트', '예능', '드라마', '방탄소년단', '뉴진스',
                    '블랙핑크', '르세라핌', '에스파', '아이유', '임영웅', '차은우', '장원영']
-EXCLUSIONS = ' '.join('-' + term for term in CELEBRITY_TERMS[:10] if term != '배우')
+FANDOM_TERMS = ['팬스 초이스', '팬스초이스', 'fans choice', 'fan choice', '팬 투표', '팬투표', '팬덤 투표', '투표 독려', '음방', '음악방송', '스밍', '뮤직비디오', '아이들', '여자아이들']
+EXCLUSIONS = ' '.join('-' + term for term in CELEBRITY_TERMS[:10] if term != '배우') + ' -MAMAVOTE -팬투표 -팬스초이스'
 QUERIES = {
     'crypto': '(크립토 OR 코인 OR 솔라나 OR 이더리움 OR 에어드랍 OR 디파이 OR 웹3 OR 금리 OR 환율 OR FOMC OR CPI OR 경제시황 OR 규제 OR 해킹 OR 온체인 OR 블록체인 OR 거래소 OR 디파이) lang:ko -filter:retweets ' + EXCLUSIONS,
     'daily': '(일상 OR 셀카 OR 운동 OR 커피 OR 하루 OR 루틴) lang:ko -filter:retweets ' + EXCLUSIONS,
@@ -266,6 +267,16 @@ def growth_insight(post):
 
 
 def celebrity_related(text):
+    lower = text.lower()
+    if re.search(r'#(?:\d{4})?mamavote\b|mamavote|#(?:idle|gidle|g_idle|bts|blackpink|newjeans)\b', lower):
+        return True
+    # '아이들' alone also means children; require idol/fan context for that term.
+    if any(term in lower for term in FANDOM_TERMS if term not in ('아이들',)):
+        return True
+    if '아이들' in text and any(term in lower for term in ['투표', '팬', '컴백', 'rt', '해시태그']):
+        return True
+    if re.search(r'\bmama\b', lower) and any(term in lower for term in ['투표', 'vote', '팬', '시상식', '초이스']):
+        return True
     return any(term in text for term in CELEBRITY_TERMS if term != '배우') or bool(re.search(r'배우(?:\s|가|의|를|님|들|로서|$)', text))
 
 
