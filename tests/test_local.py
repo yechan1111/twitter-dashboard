@@ -32,18 +32,18 @@ class LocalTests(unittest.TestCase):
     def test_refresh_history_and_observation(self):
         with patch.object(self.app, 'provider', side_effect=self.fixture) as api, patch.object(self.app, 'api_key', return_value='not-a-real-key'):
             self.assertTrue(self.app.refresh())
-            self.assertEqual(api.call_count, 8)
+            self.assertEqual(api.call_count, 9)
             self.assertFalse(self.app.refresh())
-            self.assertEqual(api.call_count, 8)
+            self.assertEqual(api.call_count, 9)
             result = self.app.snapshot()
             self.assertEqual(len(result['accounts'][0]['history']), 1)
             self.assertEqual(result['observation']['sampleSize'], 1)
             self.assertEqual(result['observation']['topics'][0]['count'], 1)
             self.assertNotIn('not-a-real-key', json.dumps(result))
             self.app.snapshot()
-            self.assertEqual(api.call_count, 8)  # Reading the UI makes no provider calls.
+            self.assertEqual(api.call_count, 9)  # Reading the UI makes no provider calls.
             self.app.refresh(force=True)
-            self.assertEqual(api.call_count, 13)  # Profiles are only fetched once/day.
+            self.assertEqual(api.call_count, 15)  # Profiles are only fetched once/day.
             self.assertEqual(len(self.app.snapshot()['accounts'][0]['history']), 1)
 
     def test_failed_refresh_preserves_existing_posts(self):
@@ -59,7 +59,7 @@ class LocalTests(unittest.TestCase):
 
     def test_trend_thresholds_and_missing_metrics(self):
         posts = []
-        for index, (followers, views) in enumerate([(1000,10000),(999,10000),(1000,9999),
+        for index, (followers, views) in enumerate([(1000,3000),(999,10000),(1000,2999),
                                                    (None,20000),(5000,None),('2000','30000'),
                                                    (True,20000),(2000,'10K')], start=1):
             posts.append({'id': str(index), 'text': '비트코인', 'viewCount': views,
@@ -72,7 +72,14 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(result['rejectedBelow'],2)
         self.assertEqual(result['rejectedMissing'],4)
         self.assertEqual(result['topics'][0]['count'],2)
-        self.assertEqual(result['filters'],{'minFollowers':1000,'minViews':10000})
+        self.assertEqual(result['filters'],{'minFollowers':1000,'minViews':3000,'strongViews':5000})
+
+    def test_growth_insight_explains_structure_without_claiming_growth(self):
+        result = self.app.growth_insight({'text': '오늘 공부한 내용 정리\n여러분은 어떻게 생각하나요?'})
+        self.assertEqual(result['format'], '학습·설명형')
+        self.assertEqual(len(result['reasons']), 4)
+        self.assertIn('검증되지', result['basis'])
+        self.assertIn('24시간', result['experiment'])
 
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
@@ -83,7 +90,7 @@ class LocalTests(unittest.TestCase):
     def test_cap_prevents_network_call(self):
         month = datetime.now(self.app.KST).strftime('%Y-%m')
         with self.app.db() as conn:
-            conn.executemany('INSERT INTO requests VALUES (?,?)', [(month, 1)] * 600)
+            conn.executemany('INSERT INTO requests VALUES (?,?)', [(month, 1)] * self.app.MONTH_LIMIT)
         with patch.object(self.app.urllib.request, 'urlopen') as network:
             with self.assertRaisesRegex(ValueError, '상한'):
                 self.app.provider('/twitter/user/info', 'GGzy55', 'fake')

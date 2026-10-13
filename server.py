@@ -22,11 +22,12 @@ DATA.mkdir(parents=True, exist_ok=True)
 DB = DATA / 'dashboard.sqlite'
 HANDLES = ['GGzy55', 'gat_only_you', 'seyyxz']
 KST = timezone(timedelta(hours=9))
-MONTH_LIMIT = 600
+MONTH_LIMIT = 900
 KEYCHAIN_SERVICE = 'SignalTwitterAPI'
 QUERIES = {
-    'crypto': '(비트코인 OR 이더리움 OR 에어드랍 OR 웹3) lang:ko -filter:retweets',
-    'daily': '(일상 OR 셀카 OR 공부 OR 자기계발) lang:ko -filter:retweets',
+    'crypto': '(크립토 OR 코인 OR 솔라나 OR 이더리움 OR 에어드랍 OR 디파이 OR 웹3) lang:ko -filter:retweets',
+    'daily': '(일상 OR 셀카 OR 공부 OR 자기계발 OR 운동 OR 커피) lang:ko -filter:retweets',
+    'culture': '(웃긴 OR 유머 OR 밈 OR 영화 OR 음악 OR AI OR 꿀팁 OR 정보) lang:ko -filter:retweets',
 }
 REFRESH_LOCK = threading.Lock()
 STOP = threading.Event()
@@ -145,7 +146,7 @@ def refresh(force=False):
             try:
                 since = (datetime.now(KST) - timedelta(days=7)).strftime('%Y-%m-%d')
                 broad_query = query + ' since:' + since
-                priority_query = broad_query + ' min_faves:50'
+                priority_query = broad_query + ' min_faves:10'
                 result = provider('/twitter/tweet/advanced_search', None, key, query=priority_query)
                 if not isinstance(result.get('tweets'), list):
                     raise ValueError('검색 응답 형식을 확인해주세요.')
@@ -182,10 +183,41 @@ def metric_count(value):
     return None
 
 
+def growth_insight(post):
+    text = post.get('text', '')
+    reasons = []
+    if '?' in text or '？' in text or any(w in text for w in ['여러분', '다들', '어떻게']):
+        reasons.append('질문으로 독자가 자기 경험을 답할 여지를 만듭니다.')
+    if any(w in text for w in ['해봤', '느꼈', '배웠', '경험', '실패', '처음', '오늘']):
+        reasons.append('경험과 변화가 드러나는 표현이 있어 개인 이야기 구조를 참고할 수 있습니다.')
+    if any(w in text for w in ['정리', '방법', '팁', '이유', '배운', '공부', '체크']):
+        reasons.append('설명·학습 구조를 참고해 독자가 얻을 내용을 분명히 할 수 있습니다.')
+    if '\n' in text:
+        reasons.append('줄바꿈으로 내용을 나눠 읽기 쉽게 구성했습니다.')
+    if any(w in text for w in ['ㅋㅋ', '웃긴', '유머', '밈', '공감']):
+        reasons.append('유머·공감 표현을 참고할 수 있습니다. 문맥 없이 그대로 따라 쓰지 마세요.')
+    if not reasons:
+        reasons.append('조회 기준은 통과했지만 텍스트에서 재사용할 구조적 단서는 적습니다.')
+    if any(w in text for w in ['정리', '방법', '공부', '배운']):
+        format_name, angle = '학습·설명형', '같은 주제를 직접 확인하고, 배운 점 하나와 아직 모르는 질문 하나를 자신의 말로 정리하세요.'
+    elif any(w in text for w in ['ㅋㅋ', '웃긴', '유머', '밈']):
+        format_name, angle = '유머·공감형 후보', '일상에서 실제로 겪은 작은 반전이나 공감 상황을 짧게 풀어보세요. 원문의 농담은 복사하지 마세요.'
+    elif '?' in text or '？' in text:
+        format_name, angle = '질문형', '내 실제 상황과 선택지 두 가지를 제시하고 경험을 묻는 질문으로 바꿔보세요.'
+    elif any(w in text for w in ['오늘', '경험', '실패', '처음']):
+        format_name, angle = '경험담 후보', '실제로 겪은 일 → 느낀 점 → 독자에게 묻는 질문 순서로 구성하세요.'
+    else:
+        format_name, angle = '짧은 의견형', '주제에 대한 내 관점과 그 이유를 더하세요. 원문의 문구나 경험을 그대로 가져오지 마세요.'
+    category = '공부' if any(w in text for w in ['공부', '배운', '자기계발']) else '크립토' if any(w in text.lower() for w in ['코인', '크립토', '웹3', '디파이', 'airdrop', '솔라나', '이더리움']) else '일상'
+    return {'category': category, 'format': format_name, 'reasons': reasons, 'angle': angle,
+            'experiment': '게시 24시간 후 답글·프로필 방문·팔로우 결과를 기록하고 같은 포맷을 비교하세요.',
+            'basis': '텍스트 규칙 분석 — 성장 효과·팔로우 전환은 검증되지 않았습니다.'}
+
+
 def qualifies(post):
     followers = metric_count((post.get('author') or {}).get('followers'))
     views = metric_count(post.get('viewCount'))
-    return followers is not None and views is not None and followers >= 1000 and views >= 10000
+    return followers is not None and views is not None and followers >= 1000 and views >= 3000
 
 
 def observed_topics(conn):
@@ -223,13 +255,19 @@ def observed_topics(conn):
     for identifier, post in candidates.items():
         if post['followers'] is None or post['views'] is None:
             missing += 1
-        elif post['followers'] < 1000 or post['views'] < 10000:
+        elif post['followers'] < 1000 or post['views'] < 3000:
             below += 1
         else:
             posts[identifier] = post
+    for post in posts.values():
+        post['growth'] = growth_insight(post)
+        post['strongReach'] = post['views'] >= 5000
     groups = [('비트코인', ['비트코인', 'btc']), ('이더리움', ['이더리움', 'eth']),
               ('에어드랍', ['에어드랍', 'airdrop']), ('Web3', ['웹3', 'web3']),
-              ('공부', ['공부', '자기계발']), ('일상', ['일상']), ('셀카', ['셀카'])]
+              ('공부', ['공부', '자기계발']), ('일상', ['일상', '커피']), ('셀카', ['셀카']),
+              ('운동', ['운동', '러닝']), ('문화', ['영화', '음악']), ('AI', ['ai', '인공지능']),
+              ('알트코인', ['솔라나', '디파이', '코인']), ('유머·밈', ['웃긴', '유머', '밈', 'ㅋㅋ']),
+              ('정보·꿀팁', ['정보', '꿀팁', '방법', '정리'])]
     hashtags = sorted({tag for p in posts.values() for tag in re.findall(r'#[가-힣A-Za-z0-9_]{2,30}', p['text'])})[:10]
     groups += [(tag, [tag.lower()]) for tag in hashtags]
     topics = []
@@ -245,7 +283,7 @@ def observed_topics(conn):
             'updated': min(times) if times else None, 'error': ' / '.join(errors) or None,
             'queries': queries or list(QUERIES.values()), 'searchMode': ' / '.join(dict.fromkeys(modes)), 'sampleSize': len(posts),
             'scannedSize': len(candidates), 'rejectedBelow': below, 'rejectedMissing': missing,
-            'filters': {'minFollowers': 1000, 'minViews': 10000}}
+            'filters': {'minFollowers': 1000, 'minViews': 3000, 'strongViews': 5000}}
 
 
 def scheduler():
