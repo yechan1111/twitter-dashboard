@@ -32,13 +32,13 @@ EXCLUSIONS = ' '.join('-' + term for term in CELEBRITY_TERMS[:10] if term != '�
 QUERIES = {
     'crypto': '(크립토 OR 코인 OR 솔라나 OR 이더리움 OR 에어드랍 OR 디파이 OR 웹3 OR 금리 OR 환율 OR FOMC OR CPI OR 경제시황 OR 규제 OR 해킹 OR 온체인 OR 블록체인 OR 거래소 OR 디파이) lang:ko -filter:retweets ' + EXCLUSIONS,
     'daily': '(일상 OR 셀카 OR 운동 OR 커피 OR 하루 OR 루틴) lang:ko -filter:retweets ' + EXCLUSIONS,
-    'ai': '(AI OR 인공지능 OR ChatGPT OR 클로드 OR 생성형) (정보 OR 방법 OR 팁 OR 정리 OR 활용 OR 도구) lang:ko -filter:retweets ' + EXCLUSIONS,
+    'ai': '(AI OR 인공지능 OR ChatGPT OR 클로드 OR 생성형) (영상 OR 릴스 OR 쇼츠 OR 블로그 OR 인스타 OR 콘텐츠 OR 부업 OR 카드뉴스 OR 작업대행) lang:ko -filter:retweets ' + EXCLUSIONS,
     'growth': '(크립토 OR 일상 OR 인공지능) lang:ko -filter:retweets ' + EXCLUSIONS,
 }
 PERSONAS = {
     'GGzy55': {'name': 'gg', 'level': '크립토 초보',
         'focus': ['크립토 입문', '일상', '셀카', '밋업'],
-        'keywords': ['셀카', '일상', '밋업', 'meetup', '커피', '산책', '입문', '초보'],
+        'keywords': ['셀카', '일상', '밋업', 'meetup', '커피', '산책', '입문', '초보', '릴스', '블로그', '인스타'],
         'themeWeights': {'일상': 3, '크립토': 2, 'AI 정보': 1},
         'angle': '초보자의 질문이나 실제 일상·사진·밋업 경험으로 풀어보세요.',
         'templates': [
@@ -47,7 +47,7 @@ PERSONAS = {
             {'cat':'일상','title':'밋업에서 기억에 남은 순간','text':'[실제로 참여한 밋업]에서 기억에 남은 건 [장면이나 대화].\n처음 알게 된 점은 [확인한 사실]. 다음엔 [질문]도 물어보고 싶다.'}]},
     'gat_only_you': {'name':'유경','level':'크립토 초보',
         'focus':['크립토 전반 이슈','프로젝트·생태계','뉴스·시장 상황','규제·보안','에어드랍 작업','밋업'],
-        'keywords':['에어드랍','airdrop','작업','참여','조건','뉴스','시장','프로젝트','생태계','규제','보안','해킹','온체인','블록체인','거래소','밋업','meetup'],
+        'keywords':['에어드랍','airdrop','작업','참여','조건','뉴스','시장','프로젝트','생태계','규제','보안','해킹','온체인','블록체인','거래소','밋업','meetup','조사','정리','콘텐츠'],
         'themeWeights':{'크립토':3,'AI 정보':1,'일상':1},
         'angle':'크립토 전반에서 무슨 일이 일어났고 왜 중요한지 초보자 눈높이로 정리하세요. 프로젝트·생태계·규제·보안, 에어드랍, 밋업 이슈를 원출처로 확인하고 매매 판단과 구분하세요.',
         'templates':[
@@ -56,7 +56,7 @@ PERSONAS = {
             {'cat':'일상','title':'밋업 공부 메모','text':'[실제로 참여한 밋업]에서 배운 개념 하나: [직접 작성].\n아직 헷갈리는 건 [질문]. 다음에 직접 확인해보고 싶다.'}]},
     'seyyxz': {'name':'세인','level':'크립토 초보 · 실제 트레이딩 운영',
         'focus':['실제 트레이딩','시장 현황','경제 시황','뉴스','일상','밋업'],
-        'keywords':['트레이딩','매매','차트','리스크','시장','뉴스','금리','환율','fomc','cpi','경제','일상','밋업','meetup'],
+        'keywords':['트레이딩','매매','차트','리스크','시장','뉴스','금리','환율','fomc','cpi','경제','일상','밋업','meetup','시황','매매일지','복기'],
         'themeWeights':{'크립토':3,'일상':2,'AI 정보':1},
         'angle':'실제 매매의 판단·리스크 관리, 시장 현황과 경제 시황, 일상으로 연결하세요. 확인한 사실과 개인 전망을 구분하고 수익·거래를 만들어내지 마세요.',
         'templates':[
@@ -66,6 +66,7 @@ PERSONAS = {
 }
 
 
+AI_CONTENT_TERMS = ['영상', '릴스', '쇼츠', '블로그', '인스타', '콘텐츠', '부업', '카드뉴스', '작업대행', '유튜브']
 REFRESH_LOCK = threading.Lock()
 STOP = threading.Event()
 
@@ -235,6 +236,25 @@ def metric_count(value):
     return None
 
 
+def practical_insight(text):
+    evidence = []
+    if any(term in text for term in ['직접', '해봤', '만들었', '테스트', '실험', '작업물', '결과물']):
+        evidence.append('직접 사용·제작 또는 작업물에 대한 언급')
+    if re.search(r'(?:^|\n)\s*[1-9][.)]|[1-9]단계', text) or any(term in text for term in ['단계', '순서', '과정', '방법']):
+        evidence.append('따라 해볼 단계·과정 설명')
+    if any(term in text for term in ['시간', '비용', '요금', '분 걸', '원 들']):
+        evidence.append('소요 시간·비용 언급')
+    if any(term in text for term in ['한계', '실패', '어려', '단점', '주의']):
+        evidence.append('한계·실패·주의점 언급')
+    flags = []
+    if any(term in text for term in ['수익 보장', '수익보장', '무조건 돈', '월 천', '월천', '누구나 돈', '100% 수익']):
+        flags.append('과장·수익 보장 표현 검토 필요')
+    if any(term in text for term in ['강의', '수강', '제휴', '추천코드', '할인코드', '쿠폰']):
+        flags.append('강의 판매·제휴 홍보 가능성 검토')
+    return {'evidence': evidence, 'flags': flags,
+            'basis': '본문의 표현 단서이며 작업물·수익·광고 관계를 확인한 결과는 아닙니다.'}
+
+
 def growth_insight(post):
     text = post.get('text', '')
     reasons = []
@@ -263,7 +283,8 @@ def growth_insight(post):
     category = classify_theme(text) or '일상'
     return {'category': category, 'format': format_name, 'reasons': reasons, 'angle': angle,
             'experiment': '게시 24시간 후 답글·프로필 방문·팔로우 결과를 기록하고 같은 포맷을 비교하세요.',
-            'basis': '텍스트 규칙 분석 — 성장 효과·팔로우 전환은 검증되지 않았습니다.'}
+            'basis': '텍스트 규칙 분석 — 성장 효과·팔로우 전환은 검증되지 않았습니다.',
+            'practical': practical_insight(text)}
 
 
 def celebrity_related(text):
@@ -288,7 +309,7 @@ def classify_theme(text):
         return '크립토'
     ai = re.search(r'(?<![a-z])ai(?![a-z])', lower) or any(term in lower for term in ['인공지능', 'chatgpt', '클로드', '생성형', '챗gpt'])
     information = any(term in lower for term in ['정보', '방법', '팁', '정리', '활용', '도구', '설명', '공부', '배운', '가이드', '기능'])
-    if ai and information:
+    if ai and any(term in text for term in AI_CONTENT_TERMS):
         return 'AI 정보'
     if any(term in text for term in ['일상', '셀카', '운동', '커피', '하루', '루틴', '오늘', '경험', '산책', '아침', '점심', '저녁']):
         return '일상'
@@ -489,13 +510,22 @@ def recommend_posts(handle, posts):
     for post in posts:
         text = post['text'].lower()
         words = [word for word in persona['keywords'] if word in text]
+        practical = practical_insight(post['text'])
         score = persona['themeWeights'].get(post['theme'],0) + min(len(words),3) * 2
+        if post['theme'] == 'AI 정보':
+            score += len(practical['evidence']) - 3 * len(practical['flags'])
         reasons = ['관심 테마: ' + post['theme']]
         if words:
             reasons.append('관심 표현: ' + ', '.join(words[:3]))
         else:
             reasons.append('직접 연결되는 관심 표현은 없어 각도 확인이 필요합니다.')
-        recommendations.append({'post':post,'rankScore':score,'reasons':reasons,'angle':persona['angle'],
+        if post['theme'] == 'AI 정보':
+            reasons.extend(practical['evidence'])
+            reasons.extend(practical['flags'])
+        ai_angles = {'GGzy55':'AI로 릴스·블로그·일상 콘텐츠를 직접 제작하고 작업물·시간·어려웠던 점을 기록하세요.',
+                     'gat_only_you':'AI로 크립토 이슈를 조사하고 뉴스·프로젝트 콘텐츠를 정리하는 과정을 직접 검증하세요.',
+                     'seyyxz':'AI로 경제 시황을 정리하거나 매매일지를 복기해보세요. 수치 원출처와 실제 판단을 확인하고 자동 매매 성과를 꾸며내지 마세요.'}
+        recommendations.append({'post':post,'rankScore':score,'reasons':reasons,'angle':ai_angles[handle] if post['theme']=='AI 정보' else persona['angle'],
                                 'basis':'설정한 관심사에 따른 규칙 정렬 — 성장 효과 예측이 아닙니다.'})
     return sorted(recommendations,key=lambda item:(item['rankScore'],item['post']['published']),reverse=True)[:5]
 

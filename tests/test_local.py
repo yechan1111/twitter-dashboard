@@ -82,7 +82,7 @@ class LocalTests(unittest.TestCase):
         self.assertIn('24시간', result['experiment'])
 
     def test_theme_and_celebrity_filter(self):
-        self.assertEqual(self.app.classify_theme('AI 배우는 방법과 활용 팁 정리'), 'AI 정보')
+        self.assertEqual(self.app.classify_theme('AI 영상 배우는 방법과 활용 팁 정리'), 'AI 정보')
         self.assertEqual(self.app.classify_theme('오늘 커피 마신 일상'), '일상')
         self.assertIsNone(self.app.classify_theme('오늘 아이돌 팬미팅 후기'))
         self.assertIsNone(self.app.classify_theme('뉴진스 AI 활용 방법'))
@@ -95,7 +95,7 @@ class LocalTests(unittest.TestCase):
             {'id':'11','text':'오늘 커피 일상 어떻게 보내세요?', 'viewCount':500,
              'author':{'followers':150}, 'createdAt':'Tue Oct 13 03:00:00 +0000 2026'},
             {'id':'12','text':'오늘 아이돌 팬미팅', 'viewCount':50000, 'author':{'followers':5000}},
-            {'id':'13','text':'AI 도구 활용 방법 정리', 'viewCount':5000, 'author':{'followers':5000}},
+            {'id':'13','text':'AI 영상 도구 활용 방법 정리', 'viewCount':5000, 'author':{'followers':5000}},
         ]
         with self.app.db() as conn:
             conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':posts}),1))
@@ -132,7 +132,7 @@ class LocalTests(unittest.TestCase):
         self.assertIn('규칙',result['classificationBasis'])
 
     def test_observations_preserve_values_and_do_not_mutate_on_read(self):
-        raw={'id':'876','text':'AI 활용 방법 정보 정리','viewCount':3500,'likeCount':None,
+        raw={'id':'876','text':'AI 영상 활용 방법 정보 정리','viewCount':3500,'likeCount':None,
              'replyCount':0,'retweetCount':2,'author':{'followers':1500}}
         with self.app.db() as conn:
             self.app.record_observation(conn,raw,100)
@@ -149,7 +149,7 @@ class LocalTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM post_observations').fetchone()[0],2)
 
     def test_material_lifecycle_duplicate_and_completed_record(self):
-        raw={'id':'98765','text':'AI 정보 도구 활용 팁','viewCount':4000,'author':{'followers':2000}}
+        raw={'id':'98765','text':'AI 영상 정보 도구 활용 팁','viewCount':4000,'author':{'followers':2000}}
         with self.app.db() as conn:conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':[raw]}),100))
         identifier=self.app.save_material({'source_id':'98765','handle':'GGzy55'})
         self.assertEqual(identifier,self.app.save_material({'source_id':'98765','handle':'GGzy55'}))
@@ -169,7 +169,7 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(len(self.app.snapshot()['records']),1)
 
     def test_material_ready_requires_angle_and_draft(self):
-        with self.app.db() as conn:conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':[{'id':'12','text':'AI 활용 정보','viewCount':4000,'author':{'followers':2000}}]}),100))
+        with self.app.db() as conn:conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':[{'id':'12','text':'AI 영상 활용 정보','viewCount':4000,'author':{'followers':2000}}]}),100))
         identifier=self.app.save_material({'source_id':'12','handle':'seyyxz'})
         material=self.app.snapshot()['materials'][0]
         with self.assertRaises(ValueError):self.app.save_material({**material,'status':'게시 준비'})
@@ -197,6 +197,16 @@ class LocalTests(unittest.TestCase):
         self.assertFalse(self.app.celebrity_related('오늘 아이들하고 산책한 일상'))
         self.assertFalse(self.app.celebrity_related('크립토 프로젝트 DAO 투표 참여 방법'))
         self.assertFalse(self.app.celebrity_related('AI 서비스 idle 상태 활용 정보'))
+
+    def test_ai_collection_scope_and_practical_ranking(self):
+        self.assertEqual(self.app.classify_theme('AI 릴스 제작 방법과 비용 정리'),'AI 정보')
+        self.assertIsNone(self.app.classify_theme('AI 최신 모델 기능 정보'))
+        good={'id':'1','text':'AI 블로그 방법 직접 테스트, 3단계 과정과 비용, 한계 정리','theme':'AI 정보','published':1}
+        hype={'id':'2','text':'AI 블로그 부업 정보 월천 수익보장 강의 할인코드','theme':'AI 정보','published':2}
+        result=self.app.recommend_posts('GGzy55',[hype,good])
+        self.assertEqual(result[0]['post']['id'],'1')
+        self.assertEqual(len(self.app.practical_insight(hype['text'])['flags']),2)
+        self.assertIn('작업물',result[0]['angle'])
 
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
