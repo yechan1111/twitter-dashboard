@@ -80,7 +80,7 @@ def provider(path, handle, key, query=None):
         if count >= MONTH_LIMIT:
             raise ValueError('월 API 요청 상한 도달 — 저장된 데이터를 표시합니다.')
         conn.execute('INSERT INTO requests VALUES (?,?)', (month, time.time()))
-    params = {'query': query, 'queryType': 'Latest'} if query else {'userName': handle}
+    params = {'query': query, 'queryType': 'Top'} if query else {'userName': handle}
     req = urllib.request.Request('https://api.twitterapi.io' + path + '?' + urllib.parse.urlencode(params),
                                  headers={'X-API-Key': key})
     try:
@@ -143,9 +143,25 @@ def refresh(force=False):
         for name, query in QUERIES.items():
             cache_key = 'search:' + name
             try:
-                result = provider('/twitter/tweet/advanced_search', None, key, query=query)
+                since = (datetime.now(KST) - timedelta(days=7)).strftime('%Y-%m-%d')
+                broad_query = query + ' since:' + since
+                priority_query = broad_query + ' min_faves:50'
+                result = provider('/twitter/tweet/advanced_search', None, key, query=priority_query)
                 if not isinstance(result.get('tweets'), list):
                     raise ValueError('검색 응답 형식을 확인해주세요.')
+                result['_queries'] = [priority_query]
+                result['_mode'] = 'Top · 최근 7일 · 인기 후보 우선'
+                # A popularity search is a discovery strategy, not the final filter.
+                # If it finds no qualifying post, try a broader query without likes.
+                if not any(qualifies(post) for post in result['tweets']):
+                    try:
+                        fallback = provider('/twitter/tweet/advanced_search', None, key, query=broad_query)
+                        if not isinstance(fallback.get('tweets'), list):
+                            raise ValueError('검색 응답 형식을 확인해주세요.')
+                        result['tweets'] += fallback['tweets'][:20]
+                        result['_queries'].append(broad_query)
+                    except ValueError as error:
+                        result['_fallback_error'] = str(error)
                 with db() as conn:
                     conn.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?)',
                                  (cache_key, json.dumps(result), time.time()))
@@ -166,13 +182,26 @@ def metric_count(value):
     return None
 
 
+def qualifies(post):
+    followers = metric_count((post.get('author') or {}).get('followers'))
+    views = metric_count(post.get('viewCount'))
+    return followers is not None and views is not None and followers >= 1000 and views >= 10000
+
+
 def observed_topics(conn):
     candidates = {}
     times = []
+    queries = []
+    modes = []
     errors = [r['message'] for r in conn.execute("SELECT message FROM errors WHERE key LIKE 'search:%'")]
     for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'search:%'"):
         times.append(row['updated'])
-        for post in json.loads(row['value']).get('tweets', [])[:20]:
+        cached_search = json.loads(row['value'])
+        queries.extend(cached_search.get('_queries', []))
+        modes.append(cached_search.get('_mode', 'Latest · 이전 검색 캐시'))
+        if cached_search.get('_fallback_error'):
+            errors.append(cached_search['_fallback_error'])
+        for post in cached_search.get('tweets', [])[:40]:
             identifier = str(post.get('id', ''))
             if not identifier.isdigit():
                 continue
@@ -214,7 +243,7 @@ def observed_topics(conn):
     return {'posts': sorted(posts.values(), key=lambda p: p['published'], reverse=True),
             'topics': sorted(topics, key=lambda t: t['count'], reverse=True)[:12],
             'updated': min(times) if times else None, 'error': ' / '.join(errors) or None,
-            'queries': list(QUERIES.values()), 'sampleSize': len(posts),
+            'queries': queries or list(QUERIES.values()), 'searchMode': ' / '.join(dict.fromkeys(modes)), 'sampleSize': len(posts),
             'scannedSize': len(candidates), 'rejectedBelow': below, 'rejectedMissing': missing,
             'filters': {'minFollowers': 1000, 'minViews': 10000}}
 
