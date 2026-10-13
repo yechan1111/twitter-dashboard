@@ -208,6 +208,24 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(len(self.app.practical_insight(hype['text'])['flags']),2)
         self.assertIn('작업물',result[0]['angle'])
 
+    def test_archive_survives_cache_removal_and_preserves_newest_measurement(self):
+        raw={'id':'654','text':'AI 블로그 활용 방법','viewCount':4000,'author':{'followers':2000,'userName':'writer'}}
+        with self.app.db() as conn:
+            self.app.record_observation(conn,raw,100)
+            self.app.record_observation(conn,{**raw,'viewCount':5000},200)
+            self.app.record_observation(conn,raw,50)
+            conn.execute('DELETE FROM cache')
+        page=self.app.archive_page('블로그','AI 정보',1)
+        self.assertEqual(page['total'],1)
+        self.assertEqual(page['posts'][0]['views'],5000)
+        self.assertEqual(page['posts'][0]['firstSeen'],50)
+        self.assertEqual(page['posts'][0]['collectedAt'],200)
+        self.assertEqual(self.app.archive_page('없는단어')['total'],0)
+        identifier=self.app.save_material({'source_id':'654','handle':'GGzy55'})
+        self.assertEqual(self.app.snapshot()['materials'][0]['id'],identifier)
+        self.assertEqual(self.app.snapshot()['materials'][0]['source']['text'],raw['text'])
+        with self.assertRaises(ValueError):self.app.archive_page(page=0)
+
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
         self.assertEqual(self.app.slot(morning), '2026-10-12T21:00:00+09:00')

@@ -87,13 +87,21 @@ def initialize():
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS errors (key TEXT PRIMARY KEY, message TEXT);
             CREATE TABLE IF NOT EXISTS materials (id INTEGER PRIMARY KEY, source_id TEXT, handle TEXT, source TEXT, category TEXT, angle TEXT, draft TEXT, resources TEXT, status TEXT, publish_at TEXT, post_url TEXT, record_id INTEGER, updated REAL, UNIQUE(source_id, handle));
+            CREATE TABLE IF NOT EXISTS post_archive (post_id TEXT PRIMARY KEY, raw TEXT, first_seen REAL, last_seen REAL);
             CREATE TABLE IF NOT EXISTS post_observations (post_id TEXT, observed REAL, followers INTEGER, views INTEGER, likes INTEGER, replies INTEGER, reposts INTEGER, PRIMARY KEY(post_id, observed));
             CREATE TABLE IF NOT EXISTS experiments (record_id INTEGER, window TEXT, views INTEGER, replies INTEGER, visits INTEGER, follows INTEGER, note TEXT, updated REAL, PRIMARY KEY(record_id, window));
         ''')
-        for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'search:%'"):
-            if row['key'] in ['search:' + name for name in QUERIES]:
-                for post in json.loads(row['value']).get('tweets', [])[:40]:
+        for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'search:%' OR key LIKE 'tweets:%'"):
+            if row['key'] in ['search:' + name for name in QUERIES] + ['tweets:' + handle for handle in HANDLES]:
+                cached = json.loads(row['value'])
+                for post in (cached.get('tweets') or (cached.get('data') or {}).get('tweets') or [])[:40]:
+                    if row['key'].startswith('tweets:') and not post.get('author'):
+                        post = {**post, 'author': {'userName': row['key'].split(':',1)[1]}}
                     record_observation(conn, post, row['updated'])
+        for row in conn.execute('SELECT source,updated FROM materials'):
+            source = json.loads(row['source'])
+            if classify_theme(source.get('text', '')) and not source.get('celebrityRelated'):
+                archive_raw(conn, source['id'], json.dumps({'normalized': source}), source.get('collectedAt') or row['updated'])
         # Existing cached measurements retain their original observation time.
         for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'profile:%'"):
             profile = json.loads(row['value']).get('data') or {}
@@ -180,6 +188,9 @@ def refresh(force=False):
                         conn.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?)',
                                      (cache_key, json.dumps(result), now))
                         conn.execute('DELETE FROM errors WHERE key=?', (cache_key,))
+                        if kind == 'tweets':
+                            for post in posts[:20]:
+                                record_observation(conn,{**post,'author':post.get('author') or {'userName':handle}},now)
                         count = (result.get('data') or {}).get('followers') if kind == 'profile' else None
                         if isinstance(count, int) and count >= 0:
                             conn.execute('INSERT OR IGNORE INTO followers VALUES (?,?,?)', (handle, now, count))
@@ -364,11 +375,55 @@ def post_structure(raw):
             'classificationBasis': '규칙 기반 후보 — 사람이 문맥을 확인해야 합니다.'}
 
 
+def archive_raw(conn, identifier, raw, observed):
+    conn.execute('INSERT INTO post_archive VALUES (?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET raw=CASE WHEN excluded.last_seen>=post_archive.last_seen THEN excluded.raw ELSE post_archive.raw END, first_seen=MIN(post_archive.first_seen,excluded.first_seen), last_seen=MAX(post_archive.last_seen,excluded.last_seen)',
+                 (identifier, raw, observed, observed))
+
+
+def archived_post(conn, row):
+    payload = json.loads(row['raw'])
+    if 'normalized' in payload:
+        post = payload['normalized']
+    else:
+        raw = payload['tweet']
+        author = raw.get('author') or {}
+        try:
+            published = parsedate_to_datetime(raw.get('createdAt', '')).timestamp()
+        except (TypeError, ValueError):
+            published = 0
+        post = {'id':row['post_id'],'text':raw.get('text',''),'handle':author.get('userName',''),
+                'name':author.get('name',''),'url':'https://x.com/i/status/'+row['post_id'],
+                'followers':metric_count(author.get('followers')),'views':metric_count(raw.get('viewCount')),
+                'likes':metric_count(raw.get('likeCount')),'replies':metric_count(raw.get('replyCount')),
+                'reposts':metric_count(raw.get('retweetCount')),'published':published,
+                'celebrityRelated':celebrity_related(raw.get('text','')+' '+str(author.get('name',''))+' '+str(author.get('description',''))),
+                'structure':post_structure(raw)}
+    theme = classify_theme(post['text'])
+    if not theme or post.get('celebrityRelated'):
+        return None
+    return {**post,'theme':theme,'collectedAt':row['last_seen'],'firstSeen':row['first_seen'],
+            'growth':growth_insight(post),
+            'observations':[dict(r) for r in conn.execute('SELECT observed,followers,views,likes,replies,reposts FROM post_observations WHERE post_id=? ORDER BY observed DESC LIMIT 10',(row['post_id'],))][::-1]}
+
+
+def archive_page(query='', theme='', page=1):
+    if len(query)>200 or theme not in ('','크립토','일상','AI 정보') or page<1 or page>100000:
+        raise ValueError('검색 조건을 확인해주세요.')
+    posts=[]
+    with db() as conn:
+        for row in conn.execute('SELECT * FROM post_archive ORDER BY last_seen DESC,post_id DESC'):
+            post=archived_post(conn,row)
+            if post and (not theme or post['theme']==theme) and (not query or query.lower() in (post['text']+' '+post.get('handle','')).lower()):
+                posts.append(post)
+    return {'posts':posts[(page-1)*20:page*20],'total':len(posts),'page':page,'pageSize':20}
+
+
 def record_observation(conn, raw, observed):
     identifier = str(raw.get('id', ''))
     author = raw.get('author') or {}
     if not identifier.isdigit() or not classify_theme(raw.get('text', '')) or celebrity_related(str(author.get('name', '')) + ' ' + str(author.get('description', ''))):
         return
+    archive_raw(conn, identifier, json.dumps({'tweet': raw}), observed)
     conn.execute('INSERT OR IGNORE INTO post_observations VALUES (?,?,?,?,?,?,?)',
                  (identifier, observed, metric_count(author.get('followers')), metric_count(raw.get('viewCount')),
                   metric_count(raw.get('likeCount')), metric_count(raw.get('replyCount')), metric_count(raw.get('retweetCount'))))
@@ -572,6 +627,9 @@ def save_material(value):
             ob = observed_topics(conn)
             source = next((p for p in ob['posts'] + ob['growthCases'] + ob['audienceQuestions'] if p['id'] == source_id), None)
             if not source:
+                row=conn.execute('SELECT * FROM post_archive WHERE post_id=?',(source_id,)).fetchone()
+                source=archived_post(conn,row) if row else None
+            if not source:
                 raise ValueError('수집한 참고 글을 찾지 못했습니다. 피드를 다시 확인해주세요.')
             cursor = conn.execute('INSERT INTO materials(source_id,handle,source,category,angle,draft,resources,status,publish_at,post_url,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                                   (source_id, handle, json.dumps(source), source['theme'], '', '', '', '보관', '', '', now))
@@ -642,7 +700,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.valid_host():
             return self.send(403, {'error': 'Local access only'})
-        if self.path == '/api/dashboard':
+        if urllib.parse.urlsplit(self.path).path == '/api/archive':
+            try:
+                params=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self.send(200,archive_page(params.get('q',[''])[0],params.get('theme',[''])[0],int(params.get('page',['1'])[0])))
+            except (ValueError,TypeError):
+                self.send(400,{'error':'검색 조건을 확인해주세요.'})
+        elif self.path == '/api/dashboard':
             try:
                 self.send(200, snapshot())
             except Exception:
