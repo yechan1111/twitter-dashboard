@@ -1,0 +1,9 @@
+{
+  "name": "signal-kol-dashboard",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-13",
+  "workers_dev": true,
+  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
+  "triggers": {"crons": ["0 0,6,12 * * *"]},
+  "kv_namespaces": [{"binding": "DASHBOARD", "id": "REPLACE_WITH_KV_NAMESPACE_ID"}]
+}

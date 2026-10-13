@@ -1,0 +1,12 @@
+{
+  "name": "signal-kol-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.mjs",
+    "check": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {"wrangler": "4.149.0"}
+}
