@@ -148,6 +148,33 @@ class LocalTests(unittest.TestCase):
             self.app.observed_topics(conn)
             self.assertEqual(conn.execute('SELECT count(*) FROM post_observations').fetchone()[0],2)
 
+    def test_material_lifecycle_duplicate_and_completed_record(self):
+        raw={'id':'98765','text':'AI 정보 도구 활용 팁','viewCount':4000,'author':{'followers':2000}}
+        with self.app.db() as conn:conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':[raw]}),100))
+        identifier=self.app.save_material({'source_id':'98765','handle':'GGzy55'})
+        self.assertEqual(identifier,self.app.save_material({'source_id':'98765','handle':'GGzy55'}))
+        material=self.app.snapshot()['materials'][0]
+        self.assertEqual(material['source']['text'],raw['text'])
+        value={**material,'angle':'내 경험으로 설명','draft':'내가 직접 사용한 AI 팁','status':'게시 준비'}
+        self.app.save_material(value)
+        with self.assertRaisesRegex(ValueError,'다른 화면'):self.app.save_material(value)
+        material=self.app.snapshot()['materials'][0]
+        with self.assertRaises(ValueError):self.app.save_material({**material,'status':'게시 완료','post_url':'https://x.com/wrong/status/123'})
+        self.app.save_material({**material,'status':'게시 완료','post_url':'https://x.com/GGzy55/status/123'})
+        result=self.app.snapshot()
+        self.assertEqual(result['materials'][0]['status'],'게시 완료')
+        self.assertEqual(result['records'][0]['text'],'내가 직접 사용한 AI 팁')
+        self.assertEqual(result['materials'][0]['record_id'],result['records'][0]['id'])
+        with self.assertRaises(ValueError):self.app.save_material({**result['materials'][0],'status':'게시 완료'})
+        self.assertEqual(len(self.app.snapshot()['records']),1)
+
+    def test_material_ready_requires_angle_and_draft(self):
+        with self.app.db() as conn:conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':[{'id':'12','text':'AI 활용 정보','viewCount':4000,'author':{'followers':2000}}]}),100))
+        identifier=self.app.save_material({'source_id':'12','handle':'seyyxz'})
+        material=self.app.snapshot()['materials'][0]
+        with self.assertRaises(ValueError):self.app.save_material({**material,'status':'게시 준비'})
+        with self.assertRaises(ValueError):self.app.save_material({'source_id':'999999','handle':'seyyxz'})
+
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
         self.assertEqual(self.app.slot(morning), '2026-10-12T21:00:00+09:00')

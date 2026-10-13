@@ -53,6 +53,7 @@ def initialize():
             CREATE TABLE IF NOT EXISTS followers (handle TEXT, observed REAL, count INTEGER, PRIMARY KEY(handle, observed));
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS errors (key TEXT PRIMARY KEY, message TEXT);
+            CREATE TABLE IF NOT EXISTS materials (id INTEGER PRIMARY KEY, source_id TEXT, handle TEXT, source TEXT, category TEXT, angle TEXT, draft TEXT, resources TEXT, status TEXT, publish_at TEXT, post_url TEXT, record_id INTEGER, updated REAL, UNIQUE(source_id, handle));
             CREATE TABLE IF NOT EXISTS post_observations (post_id TEXT, observed REAL, followers INTEGER, views INTEGER, likes INTEGER, replies INTEGER, reposts INTEGER, PRIMARY KEY(post_id, observed));
             CREATE TABLE IF NOT EXISTS experiments (record_id INTEGER, window TEXT, views INTEGER, replies INTEGER, visits INTEGER, follows INTEGER, note TEXT, updated REAL, PRIMARY KEY(record_id, window));
         ''')
@@ -429,10 +430,13 @@ def snapshot():
         for record in records:
             record['experiments'] = [e for e in experiments if e['record_id'] == record['id']]
         observation = observed_topics(conn)
+        materials = [dict(r) for r in conn.execute('SELECT * FROM materials ORDER BY updated DESC')]
+        for material in materials:
+            material['source'] = json.loads(material['source'])
         usage = conn.execute('SELECT count(*) FROM requests WHERE month=?',
                              (datetime.now(KST).strftime('%Y-%m'),)).fetchone()[0]
     return {'accounts': accounts, 'records': records, 'usage': usage, 'limit': MONTH_LIMIT,
-            'observation': observation, 'schedule': ['09:00', '15:00', '21:00'], 'refreshing': REFRESH_LOCK.locked(), 'mode': 'local'}
+            'observation': observation, 'materials': materials, 'schedule': ['09:00', '15:00', '21:00'], 'refreshing': REFRESH_LOCK.locked(), 'mode': 'local'}
 
 
 def save_experiment(value):
@@ -457,6 +461,72 @@ def save_experiment(value):
             raise ValueError('게시 기록이 없습니다.')
         conn.execute('INSERT OR REPLACE INTO experiments VALUES (?,?,?,?,?,?,?,?)',
                      (record_id, window, *metrics, note, time.time()))
+
+
+MATERIAL_STATUSES = ['보관', '조사 필요', '작성 중', '게시 준비', '게시 완료']
+
+
+def save_material(value):
+    now = time.time()
+    with db() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if 'id' not in value:
+            handle = value.get('handle')
+            source_id = str(value.get('source_id', ''))
+            if handle not in HANDLES or not source_id.isdigit():
+                raise ValueError('계정과 참고 글을 확인해주세요.')
+            existing = conn.execute('SELECT id FROM materials WHERE source_id=? AND handle=?', (source_id, handle)).fetchone()
+            if existing:
+                return existing['id']
+            ob = observed_topics(conn)
+            source = next((p for p in ob['posts'] + ob['growthCases'] + ob['audienceQuestions'] if p['id'] == source_id), None)
+            if not source:
+                raise ValueError('수집한 참고 글을 찾지 못했습니다. 피드를 다시 확인해주세요.')
+            cursor = conn.execute('INSERT INTO materials(source_id,handle,source,category,angle,draft,resources,status,publish_at,post_url,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                                  (source_id, handle, json.dumps(source), source['theme'], '', '', '', '보관', '', '', now))
+            return cursor.lastrowid
+        identifier = value.get('id')
+        if not isinstance(identifier, int):
+            raise ValueError('소재 ID를 확인해주세요.')
+        old = conn.execute('SELECT * FROM materials WHERE id=?', (identifier,)).fetchone()
+        if not old:
+            raise ValueError('저장된 소재가 없습니다.')
+        if old['status'] == '게시 완료':
+            raise ValueError('게시 완료 소재는 기록을 보호하기 위해 수정할 수 없습니다.')
+        if value.get('updated') != old['updated']:
+            raise ValueError('다른 화면에서 수정됐습니다. 소재를 다시 열어주세요.')
+        handle = value.get('handle')
+        status = value.get('status')
+        category = value.get('category')
+        angle = str(value.get('angle', '')).strip()
+        draft = str(value.get('draft', '')).strip()
+        resources = str(value.get('resources', '')).strip()
+        publish_at = str(value.get('publish_at', '')).strip()
+        post_url = str(value.get('post_url', '')).strip()
+        if handle not in HANDLES or status not in MATERIAL_STATUSES or category not in ['크립토', '일상', 'AI 정보']:
+            raise ValueError('계정, 상태, 테마를 확인해주세요.')
+        if len(angle) > 1000 or len(draft) > 3000 or len(resources) > 1000:
+            raise ValueError('문구 길이를 줄여주세요.')
+        if publish_at:
+            try:
+                datetime.strptime(publish_at, '%Y-%m-%dT%H:%M')
+            except ValueError:
+                raise ValueError('게시 예정 시각을 확인해주세요.') from None
+        if status in ['게시 준비', '게시 완료'] and (not angle or not draft):
+            raise ValueError('게시 준비에는 내 각도와 초안이 필요합니다.')
+        record_id = None
+        if status == '게시 완료':
+            pattern = r'https://x\.com/' + re.escape(handle) + r'/status/[0-9]+(?:\?.*)?'
+            if not re.fullmatch(pattern, post_url, re.IGNORECASE):
+                raise ValueError('해당 관리 계정에서 직접 게시한 글의 X 링크가 필요합니다.')
+            cursor = conn.execute('INSERT INTO records(handle,text,category,url,created) VALUES (?,?,?,?,?)', (handle,draft,category,post_url,now))
+            record_id = cursor.lastrowid
+        try:
+            conn.execute('UPDATE materials SET handle=?,category=?,angle=?,draft=?,resources=?,status=?,publish_at=?,post_url=?,record_id=?,updated=? WHERE id=?',
+                         (handle,category,angle,draft,resources,status,publish_at,post_url,record_id,now,identifier))
+        except sqlite3.IntegrityError:
+            raise ValueError('같은 글이 이 계정에 이미 저장되어 있습니다.') from None
+        return identifier
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -494,7 +564,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host():
             return self.send(403, {'error': 'Local access only'})
-        if self.path not in ('/api/records', '/api/experiments'):
+        if self.path not in ('/api/records', '/api/experiments', '/api/materials'):
             return self.send(404, {'error': 'Not found'})
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             return self.send(415, {'error': 'JSON required'})
@@ -506,6 +576,9 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < size <= 10000:
                 raise ValueError()
             value = json.loads(self.rfile.read(size))
+            if self.path == '/api/materials':
+                identifier = save_material(value)
+                return self.send(201, {'ok': True, 'id': identifier})
             if self.path == '/api/experiments':
                 save_experiment(value)
                 return self.send(201, {'ok': True})
@@ -519,8 +592,10 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute('INSERT INTO records(handle,text,category,url,created) VALUES (?,?,?,?,?)',
                              (handle, text, category, url, time.time()))
             self.send(201, {'ok': True})
+        except ValueError as error:
+            self.send(400, {'error': str(error) if self.path == '/api/materials' else '입력 내용을 확인해주세요.'})
         except Exception:
-            self.send(400, {'error': '계정, 내용, 카테고리와 X 링크를 확인해주세요.'})
+            self.send(400, {'error': '입력 내용을 확인해주세요.'})
 
 
 initialize()
