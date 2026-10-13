@@ -122,6 +122,32 @@ class LocalTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.app.save_experiment({**value,'record_id':999})
         with self.assertRaises(ValueError):self.app.save_experiment({**value,'views':-1})
 
+    def test_post_structure_separates_hook_and_format(self):
+        raw={'text':'여러분은 AI 어떻게 활용하나요?\n방법과 팁을 정리했습니다.', 'extendedEntities':{'media':[{'type':'photo'}]}}
+        result=self.app.post_structure(raw)
+        self.assertEqual(result['firstSentence'],'여러분은 AI 어떻게 활용하나요?')
+        self.assertIn('질문형 후보',result['hooks'])
+        self.assertEqual(result['format'],'사진 + 문구')
+        self.assertTrue(result['hookEvidence'])
+        self.assertIn('규칙',result['classificationBasis'])
+
+    def test_observations_preserve_values_and_do_not_mutate_on_read(self):
+        raw={'id':'876','text':'AI 활용 방법 정보 정리','viewCount':3500,'likeCount':None,
+             'replyCount':0,'retweetCount':2,'author':{'followers':1500}}
+        with self.app.db() as conn:
+            self.app.record_observation(conn,raw,100)
+            self.app.record_observation(conn,raw,100)
+            self.app.record_observation(conn,{**raw,'viewCount':3400},200)
+            conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':[raw]}),200))
+            result=self.app.observed_topics(conn)
+            post=result['posts'][0]
+            self.assertEqual(post['collectedAt'],200)
+            self.assertEqual(len(post['observations']),2)
+            self.assertEqual([o['views'] for o in post['observations']],[3500,3400])
+            self.assertIsNone(post['observations'][0]['likes'])
+            self.app.observed_topics(conn)
+            self.assertEqual(conn.execute('SELECT count(*) FROM post_observations').fetchone()[0],2)
+
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
         self.assertEqual(self.app.slot(morning), '2026-10-12T21:00:00+09:00')

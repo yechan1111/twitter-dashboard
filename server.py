@@ -53,8 +53,13 @@ def initialize():
             CREATE TABLE IF NOT EXISTS followers (handle TEXT, observed REAL, count INTEGER, PRIMARY KEY(handle, observed));
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS errors (key TEXT PRIMARY KEY, message TEXT);
+            CREATE TABLE IF NOT EXISTS post_observations (post_id TEXT, observed REAL, followers INTEGER, views INTEGER, likes INTEGER, replies INTEGER, reposts INTEGER, PRIMARY KEY(post_id, observed));
             CREATE TABLE IF NOT EXISTS experiments (record_id INTEGER, window TEXT, views INTEGER, replies INTEGER, visits INTEGER, follows INTEGER, note TEXT, updated REAL, PRIMARY KEY(record_id, window));
         ''')
+        for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'search:%'"):
+            if row['key'] in ['search:' + name for name in QUERIES]:
+                for post in json.loads(row['value']).get('tweets', [])[:40]:
+                    record_observation(conn, post, row['updated'])
         # Existing cached measurements retain their original observation time.
         for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'profile:%'"):
             profile = json.loads(row['value']).get('data') or {}
@@ -174,9 +179,12 @@ def refresh(force=False):
                         result['_queries'].append(broad_query)
                     except ValueError as error:
                         result['_fallback_error'] = str(error)
+                observed = time.time()
                 with db() as conn:
                     conn.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?)',
-                                 (cache_key, json.dumps(result), time.time()))
+                                 (cache_key, json.dumps(result), observed))
+                    for post in result['tweets'][:40]:
+                        record_observation(conn, post, observed)
                     conn.execute('DELETE FROM errors WHERE key=?', (cache_key,))
             except ValueError as error:
                 with db() as conn:
@@ -252,6 +260,56 @@ def qualifies(post):
     return not celebrity and classify_theme(post.get('text', '')) is not None and followers is not None and views is not None and followers >= 1000 and views >= 3000
 
 
+def post_structure(raw):
+    text = raw.get('text', '').strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first_line = lines[0] if lines else ''
+    sentence = re.split(r'(?<=[.!?。！？])\s+', first_line, maxsplit=1)[0]
+    hooks = []
+    evidence = []
+    if '?' in sentence or '？' in sentence or any(term in sentence for term in ['어떻게', '왜 ', '여러분', '다들']):
+        hooks.append('질문형 후보')
+        evidence.append('첫 문장의 질문 표현을 감지했습니다.')
+    if any(term in sentence for term in ['나만', '공감', '다들', '우리', '오늘', 'ㅋㅋ']):
+        hooks.append('공감형 후보')
+        evidence.append('첫 문장에 일상·독자 호명·공감 표현이 있습니다.')
+    if any(term in sentence for term in ['그런데', '근데', '반전', '의외', '알고 보니', '사실은']):
+        hooks.append('반전형 후보')
+        evidence.append('첫 문장의 대비·반전 표현을 감지했습니다.')
+    if not hooks:
+        hooks.append('직접 진술형 후보')
+        evidence.append('질문·공감·반전 규칙에 일치하지 않는 첫 문장입니다.')
+    media = (raw.get('extendedEntities') or {}).get('media') or []
+    if any(m.get('type') in ('video','animated_gif') for m in media):
+        content_format = '영상·GIF + 문구'
+        format_basis = '제공사 응답에 영상 또는 GIF 미디어가 있습니다.'
+    elif any(m.get('type') == 'photo' for m in media):
+        content_format = '사진 + 문구'
+        format_basis = '제공사 응답에 사진 미디어가 있습니다.'
+    elif any(term in text for term in ['정리', '방법', '팁', '가이드']):
+        content_format = '정보 요약 후보'
+        format_basis = '본문의 정리·방법·팁 표현을 감지했습니다.'
+    elif len(lines) >= 3:
+        content_format = '문단형 텍스트'
+        format_basis = '비어 있지 않은 줄이 3개 이상입니다. 스레드 여부는 확인하지 않았습니다.'
+    else:
+        content_format = '짧은 텍스트'
+        format_basis = '텍스트 구조로 분류했습니다. 미디어 누락 가능성은 있습니다.'
+    return {'firstSentence': sentence, 'hooks': hooks, 'hookEvidence': evidence,
+            'format': content_format, 'formatBasis': format_basis,
+            'classificationBasis': '규칙 기반 후보 — 사람이 문맥을 확인해야 합니다.'}
+
+
+def record_observation(conn, raw, observed):
+    identifier = str(raw.get('id', ''))
+    author = raw.get('author') or {}
+    if not identifier.isdigit() or not classify_theme(raw.get('text', '')) or celebrity_related(str(author.get('name', '')) + ' ' + str(author.get('description', ''))):
+        return
+    conn.execute('INSERT OR IGNORE INTO post_observations VALUES (?,?,?,?,?,?,?)',
+                 (identifier, observed, metric_count(author.get('followers')), metric_count(raw.get('viewCount')),
+                  metric_count(raw.get('likeCount')), metric_count(raw.get('replyCount')), metric_count(raw.get('retweetCount'))))
+
+
 def observed_topics(conn):
     candidates = {}
     times = []
@@ -271,19 +329,23 @@ def observed_topics(conn):
             identifier = str(post.get('id', ''))
             if not identifier.isdigit():
                 continue
+            if identifier in candidates and candidates[identifier]['collectedAt'] >= row['updated']:
+                continue
             author = post.get('author') or {}
             try:
                 published = parsedate_to_datetime(post.get('createdAt', '')).timestamp()
             except (TypeError, ValueError):
                 published = 0
             candidates[identifier] = {'id': identifier, 'text': post.get('text', ''),
+                                 'collectedAt': row['updated'], 'structure': post_structure(post),
+                                 'observations': [dict(r) for r in conn.execute('SELECT observed,followers,views,likes,replies,reposts FROM post_observations WHERE post_id=? ORDER BY observed DESC LIMIT 10', (identifier,))][::-1],
                                  'celebrityRelated': celebrity_related(post.get('text', '') + ' ' + str(author.get('name', '')) + ' ' + str(author.get('description', ''))),
                                  'followers': metric_count(author.get('followers')),
                                  'views': metric_count(post.get('viewCount')),
                                  'handle': author.get('userName', ''), 'name': author.get('name', ''),
                                  'url': 'https://x.com/i/status/' + identifier,
-                                 'likes': post.get('likeCount', 0), 'replies': post.get('replyCount', 0),
-                                 'reposts': post.get('retweetCount', 0), 'published': published}
+                                 'likes': metric_count(post.get('likeCount')), 'replies': metric_count(post.get('replyCount')),
+                                 'reposts': metric_count(post.get('retweetCount')), 'published': published}
     posts = {}
     missing = 0
     below = 0
