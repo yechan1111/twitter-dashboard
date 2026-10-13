@@ -156,6 +156,53 @@ def slot(now=None):
     return max(value for value in candidates if value <= now).isoformat()
 
 
+def collect_accounts(key, force_profile=False):
+    for handle in HANDLES:
+        for kind, path in [('profile', '/twitter/user/info'), ('tweets', '/twitter/user/last_tweets')]:
+            cache_key = kind + ':' + handle
+            if kind == 'profile' and not force_profile:
+                with db() as conn:
+                    previous_profile = conn.execute('SELECT updated FROM cache WHERE key=?', (cache_key,)).fetchone()
+                if previous_profile and datetime.fromtimestamp(previous_profile['updated'], KST).date() == datetime.now(KST).date():
+                    continue
+            try:
+                result = provider(path, handle, key)
+                if kind == 'profile':
+                    profile = result.get('data') or {}
+                    if not profile.get('id'):
+                        raise ValueError('프로필 응답 형식을 확인해주세요.')
+                else:
+                    posts = result.get('tweets', (result.get('data') or {}).get('tweets'))
+                    if not isinstance(posts, list):
+                        raise ValueError('최근 글 응답 형식을 확인해주세요.')
+                now = time.time()
+                with db() as conn:
+                    conn.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?)',
+                                 (cache_key, json.dumps(result), now))
+                    conn.execute('DELETE FROM errors WHERE key=?', (cache_key,))
+                    if kind == 'tweets':
+                        for post in posts[:20]:
+                            record_observation(conn,{**post,'author':post.get('author') or {'userName':handle}},now)
+                    count = (result.get('data') or {}).get('followers') if kind == 'profile' else None
+                    if isinstance(count, int) and count >= 0:
+                        conn.execute('INSERT OR IGNORE INTO followers VALUES (?,?,?)', (handle, now, count))
+            except ValueError as error:
+                with db() as conn:
+                    conn.execute('INSERT OR REPLACE INTO errors VALUES (?,?)', (cache_key, str(error)))
+
+
+def manual_account_refresh():
+    if not REFRESH_LOCK.acquire(blocking=False):
+        return None
+    try:
+        collect_accounts(api_key(), force_profile=True)
+        result = snapshot()
+        result['refreshing'] = False
+        return result
+    finally:
+        REFRESH_LOCK.release()
+
+
 def refresh(force=False):
     with REFRESH_LOCK:
         current_slot = slot()
@@ -165,38 +212,7 @@ def refresh(force=False):
                 return False
             conn.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', ('last_slot', current_slot))
         key = api_key()
-        for handle in HANDLES:
-            for kind, path in [('profile', '/twitter/user/info'), ('tweets', '/twitter/user/last_tweets')]:
-                cache_key = kind + ':' + handle
-                if kind == 'profile':
-                    with db() as conn:
-                        previous_profile = conn.execute('SELECT updated FROM cache WHERE key=?', (cache_key,)).fetchone()
-                    if previous_profile and datetime.fromtimestamp(previous_profile['updated'], KST).date() == datetime.now(KST).date():
-                        continue
-                try:
-                    result = provider(path, handle, key)
-                    if kind == 'profile':
-                        profile = result.get('data') or {}
-                        if not profile.get('id'):
-                            raise ValueError('프로필 응답 형식을 확인해주세요.')
-                    else:
-                        posts = result.get('tweets', (result.get('data') or {}).get('tweets'))
-                        if not isinstance(posts, list):
-                            raise ValueError('최근 글 응답 형식을 확인해주세요.')
-                    now = time.time()
-                    with db() as conn:
-                        conn.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?)',
-                                     (cache_key, json.dumps(result), now))
-                        conn.execute('DELETE FROM errors WHERE key=?', (cache_key,))
-                        if kind == 'tweets':
-                            for post in posts[:20]:
-                                record_observation(conn,{**post,'author':post.get('author') or {'userName':handle}},now)
-                        count = (result.get('data') or {}).get('followers') if kind == 'profile' else None
-                        if isinstance(count, int) and count >= 0:
-                            conn.execute('INSERT OR IGNORE INTO followers VALUES (?,?,?)', (handle, now, count))
-                except ValueError as error:
-                    with db() as conn:
-                        conn.execute('INSERT OR REPLACE INTO errors VALUES (?,?)', (cache_key, str(error)))
+        collect_accounts(key)
         for name, query in QUERIES.items():
             cache_key = 'search:' + name
             if name == 'growth':
@@ -719,7 +735,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host():
             return self.send(403, {'error': 'Local access only'})
-        if self.path not in ('/api/records', '/api/experiments', '/api/materials'):
+        if self.path not in ('/api/records', '/api/experiments', '/api/materials', '/api/refresh-accounts'):
             return self.send(404, {'error': 'Not found'})
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             return self.send(415, {'error': 'JSON required'})
@@ -731,6 +747,13 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < size <= 10000:
                 raise ValueError()
             value = json.loads(self.rfile.read(size))
+            if self.path == '/api/refresh-accounts':
+                if origin != 'http://' + self.headers.get('Host', ''):
+                    return self.send(403, {'error': 'Origin required'})
+                result = manual_account_refresh()
+                if result is None:
+                    return self.send(409, {'error': '다른 갱신이 진행 중입니다. 완료 후 다시 눌러주세요.'})
+                return self.send(200, result)
             if self.path == '/api/materials':
                 identifier = save_material(value)
                 return self.send(201, {'ok': True, 'id': identifier})

@@ -226,6 +226,24 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(self.app.snapshot()['materials'][0]['source']['text'],raw['text'])
         with self.assertRaises(ValueError):self.app.archive_page(page=0)
 
+    def test_manual_account_refresh_always_fetches_profiles_without_search(self):
+        with patch.object(self.app,'provider',side_effect=self.fixture) as api, patch.object(self.app,'api_key',return_value='fake'):
+            result=self.app.manual_account_refresh()
+            self.assertEqual(api.call_count,6)
+            self.assertEqual(len(result['accounts']),3)
+            self.assertFalse(result['refreshing'])
+            self.app.manual_account_refresh()
+            self.assertEqual(api.call_count,12)
+            self.assertTrue(all(call.args[0] in ['/twitter/user/info','/twitter/user/last_tweets'] for call in api.call_args_list))
+        with self.app.db() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM cache WHERE key LIKE 'search:%'").fetchone()[0],0)
+        self.app.REFRESH_LOCK.acquire()
+        try:
+            with patch.object(self.app,'provider') as api:
+                self.assertIsNone(self.app.manual_account_refresh())
+                api.assert_not_called()
+        finally:self.app.REFRESH_LOCK.release()
+
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
         self.assertEqual(self.app.slot(morning), '2026-10-12T21:00:00+09:00')
