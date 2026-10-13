@@ -156,8 +156,18 @@ def refresh(force=False):
         return True
 
 
+def metric_count(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str) and re.fullmatch(r'[0-9]+', value.strip()):
+        return int(value.strip())
+    return None
+
+
 def observed_topics(conn):
-    posts = {}
+    candidates = {}
     times = []
     errors = [r['message'] for r in conn.execute("SELECT message FROM errors WHERE key LIKE 'search:%'")]
     for row in conn.execute("SELECT * FROM cache WHERE key LIKE 'search:%'"):
@@ -171,11 +181,23 @@ def observed_topics(conn):
                 published = parsedate_to_datetime(post.get('createdAt', '')).timestamp()
             except (TypeError, ValueError):
                 published = 0
-            posts[identifier] = {'id': identifier, 'text': post.get('text', ''),
+            candidates[identifier] = {'id': identifier, 'text': post.get('text', ''),
+                                 'followers': metric_count(author.get('followers')),
+                                 'views': metric_count(post.get('viewCount')),
                                  'handle': author.get('userName', ''), 'name': author.get('name', ''),
                                  'url': 'https://x.com/i/status/' + identifier,
                                  'likes': post.get('likeCount', 0), 'replies': post.get('replyCount', 0),
                                  'reposts': post.get('retweetCount', 0), 'published': published}
+    posts = {}
+    missing = 0
+    below = 0
+    for identifier, post in candidates.items():
+        if post['followers'] is None or post['views'] is None:
+            missing += 1
+        elif post['followers'] < 1000 or post['views'] < 10000:
+            below += 1
+        else:
+            posts[identifier] = post
     groups = [('비트코인', ['비트코인', 'btc']), ('이더리움', ['이더리움', 'eth']),
               ('에어드랍', ['에어드랍', 'airdrop']), ('Web3', ['웹3', 'web3']),
               ('공부', ['공부', '자기계발']), ('일상', ['일상']), ('셀카', ['셀카'])]
@@ -192,7 +214,9 @@ def observed_topics(conn):
     return {'posts': sorted(posts.values(), key=lambda p: p['published'], reverse=True),
             'topics': sorted(topics, key=lambda t: t['count'], reverse=True)[:12],
             'updated': min(times) if times else None, 'error': ' / '.join(errors) or None,
-            'queries': list(QUERIES.values()), 'sampleSize': len(posts)}
+            'queries': list(QUERIES.values()), 'sampleSize': len(posts),
+            'scannedSize': len(candidates), 'rejectedBelow': below, 'rejectedMissing': missing,
+            'filters': {'minFollowers': 1000, 'minViews': 10000}}
 
 
 def scheduler():

@@ -26,7 +26,7 @@ class LocalTests(unittest.TestCase):
     def fixture(self, path, handle, key, query=None):
         if '/info' in path:
             return {'data': {'id': '123', 'followers': 91}}
-        post = {'id': '123456', 'text': '비트코인 공부 #Web3', 'createdAt': 'Tue Oct 13 03:00:00 +0000 2026', 'likeCount': 3, 'author': {'userName': 'public_sample'}}
+        post = {'id': '123456', 'text': '비트코인 공부 #Web3', 'createdAt': 'Tue Oct 13 03:00:00 +0000 2026', 'likeCount': 3, 'viewCount': 10000, 'author': {'userName': 'public_sample', 'followers': 1000}}
         return {'tweets': [post]}
 
     def test_refresh_history_and_observation(self):
@@ -56,6 +56,23 @@ class LocalTests(unittest.TestCase):
         self.assertIn('402', result['accounts'][0]['error'])
         self.assertEqual(result['observation']['sampleSize'], 1)
         self.assertIn('402', result['observation']['error'])
+
+    def test_trend_thresholds_and_missing_metrics(self):
+        posts = []
+        for index, (followers, views) in enumerate([(1000,10000),(999,10000),(1000,9999),
+                                                   (None,20000),(5000,None),('2000','30000'),
+                                                   (True,20000),(2000,'10K')], start=1):
+            posts.append({'id': str(index), 'text': '비트코인', 'viewCount': views,
+                          'author': {'userName': 'author'+str(index), 'followers': followers}})
+        with self.app.db() as conn:
+            conn.execute('INSERT INTO cache VALUES (?,?,?)', ('search:crypto', json.dumps({'tweets':posts}), 1))
+            result = self.app.observed_topics(conn)
+        self.assertEqual({p['id'] for p in result['posts']}, {'1','6'})
+        self.assertEqual(result['scannedSize'],8)
+        self.assertEqual(result['rejectedBelow'],2)
+        self.assertEqual(result['rejectedMissing'],4)
+        self.assertEqual(result['topics'][0]['count'],2)
+        self.assertEqual(result['filters'],{'minFollowers':1000,'minViews':10000})
 
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
