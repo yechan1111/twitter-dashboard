@@ -32,18 +32,18 @@ class LocalTests(unittest.TestCase):
     def test_refresh_history_and_observation(self):
         with patch.object(self.app, 'provider', side_effect=self.fixture) as api, patch.object(self.app, 'api_key', return_value='not-a-real-key'):
             self.assertTrue(self.app.refresh())
-            self.assertEqual(api.call_count, 9)
+            self.assertEqual(api.call_count, 10)
             self.assertFalse(self.app.refresh())
-            self.assertEqual(api.call_count, 9)
+            self.assertEqual(api.call_count, 10)
             result = self.app.snapshot()
             self.assertEqual(len(result['accounts'][0]['history']), 1)
             self.assertEqual(result['observation']['sampleSize'], 1)
             self.assertEqual(result['observation']['topics'][0]['count'], 1)
             self.assertNotIn('not-a-real-key', json.dumps(result))
             self.app.snapshot()
-            self.assertEqual(api.call_count, 9)  # Reading the UI makes no provider calls.
+            self.assertEqual(api.call_count, 10)  # Reading the UI makes no provider calls.
             self.app.refresh(force=True)
-            self.assertEqual(api.call_count, 15)  # Profiles are only fetched once/day.
+            self.assertEqual(api.call_count, 16)  # Profiles are only fetched once/day.
             self.assertEqual(len(self.app.snapshot()['accounts'][0]['history']), 1)
 
     def test_failed_refresh_preserves_existing_posts(self):
@@ -80,6 +80,47 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(len(result['reasons']), 4)
         self.assertIn('검증되지', result['basis'])
         self.assertIn('24시간', result['experiment'])
+
+    def test_theme_and_celebrity_filter(self):
+        self.assertEqual(self.app.classify_theme('AI 배우는 방법과 활용 팁 정리'), 'AI 정보')
+        self.assertEqual(self.app.classify_theme('오늘 커피 마신 일상'), '일상')
+        self.assertIsNone(self.app.classify_theme('오늘 아이돌 팬미팅 후기'))
+        self.assertIsNone(self.app.classify_theme('뉴진스 AI 활용 방법'))
+        self.assertIsNone(self.app.classify_theme('배우 인터뷰 오늘 일상'))
+        self.assertIsNone(self.app.classify_theme('최신 영화 음악 추천'))
+        self.assertIsNone(self.app.classify_theme('AI 이야기'))
+
+    def test_growth_cases_questions_and_old_cache_excluded(self):
+        posts = [
+            {'id':'11','text':'오늘 커피 일상 어떻게 보내세요?', 'viewCount':500,
+             'author':{'followers':150}, 'createdAt':'Tue Oct 13 03:00:00 +0000 2026'},
+            {'id':'12','text':'오늘 아이돌 팬미팅', 'viewCount':50000, 'author':{'followers':5000}},
+            {'id':'13','text':'AI 도구 활용 방법 정리', 'viewCount':5000, 'author':{'followers':5000}},
+        ]
+        with self.app.db() as conn:
+            conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:ai',json.dumps({'tweets':posts}),1))
+            conn.execute('INSERT INTO cache VALUES (?,?,?)',('search:culture',json.dumps({'tweets':[{'id':'99','text':'일상 오늘','viewCount':99999,'author':{'followers':99999}}]}),1))
+            data=self.app.observed_topics(conn)
+        self.assertEqual({p['id'] for p in data['posts']},{'13'})
+        self.assertEqual(data['growthCases'][0]['id'],'11')
+        self.assertEqual(data['audienceQuestions'][0]['id'],'11')
+        self.assertEqual(data['rejectedTheme'],1)
+
+    def test_experiment_preserves_unknown_metrics_and_updates_window(self):
+        with self.app.db() as conn:
+            cursor=conn.execute('INSERT INTO records(handle,text,category,url,created) VALUES (?,?,?,?,?)',('GGzy55','AI tip','AI 정보','',1))
+            record=cursor.lastrowid
+        value={'record_id':record,'window':'24h','views':100,'replies':0,'visits':None,'follows':None,'note':'첫 문장 실험'}
+        self.app.save_experiment(value)
+        data=self.app.snapshot()['records'][0]['experiments'][0]
+        self.assertEqual(data['views'],100)
+        self.assertIsNone(data['visits'])
+        self.assertEqual(data['replies'],0)
+        self.app.save_experiment({**value,'views':200})
+        self.assertEqual(len(self.app.snapshot()['records'][0]['experiments']),1)
+        self.assertEqual(self.app.snapshot()['records'][0]['experiments'][0]['views'],200)
+        with self.assertRaises(ValueError):self.app.save_experiment({**value,'record_id':999})
+        with self.assertRaises(ValueError):self.app.save_experiment({**value,'views':-1})
 
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
