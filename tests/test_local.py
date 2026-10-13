@@ -175,6 +175,19 @@ class LocalTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.app.save_material({**material,'status':'게시 준비'})
         with self.assertRaises(ValueError):self.app.save_material({'source_id':'999999','handle':'seyyxz'})
 
+    def test_confirmed_personas_and_trading_macro_priority(self):
+        self.assertEqual(self.app.PERSONAS['GGzy55']['name'],'gg')
+        self.assertEqual(self.app.PERSONAS['gat_only_you']['name'],'유경')
+        self.assertEqual(self.app.PERSONAS['seyyxz']['name'],'세인')
+        self.assertIn('실제 트레이딩',self.app.PERSONAS['seyyxz']['focus'])
+        self.assertEqual(self.app.classify_theme('FOMC 금리와 환율 경제 시황 정리'),'크립토')
+        posts=[{'id':'1','theme':'크립토','text':'에어드랍 작업 참여 조건','published':1},
+               {'id':'2','theme':'크립토','text':'FOMC 금리 환율 시장 현황','published':1},
+               {'id':'3','theme':'일상','text':'일상 셀카 밋업 이야기','published':1}]
+        self.assertEqual(self.app.recommend_posts('gat_only_you',posts)[0]['post']['id'],'1')
+        self.assertEqual(self.app.recommend_posts('seyyxz',posts)[0]['post']['id'],'2')
+        self.assertEqual(self.app.recommend_posts('GGzy55',posts)[0]['post']['id'],'3')
+
     def test_slot_before_morning_and_after_evening(self):
         morning = datetime(2026, 10, 13, 8, 0, tzinfo=self.app.KST)
         self.assertEqual(self.app.slot(morning), '2026-10-12T21:00:00+09:00')
